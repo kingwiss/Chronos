@@ -3,7 +3,9 @@ import { ClassificationResult, NoteType, NutritionData } from "../types";
 
 // Lazy initialization prevents top-level crashes if API Key is missing during build/runtime start
 const getAiClient = () => {
+    // The API key must be obtained exclusively from the environment variable process.env.API_KEY
     const key = process.env.API_KEY;
+    
     // Fallback to avoid constructor error, though API calls will fail if key is invalid
     return new GoogleGenAI({ apiKey: key || 'dummy_key_for_init' });
 };
