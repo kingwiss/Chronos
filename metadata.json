@@ -1,0 +1,8 @@
+{
+  "name": "Chronos AI Notepad",
+  "description": "An intelligent timeline-based notepad that tracks nutrition, steps, alarms, and thoughts using Gemini AI.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
