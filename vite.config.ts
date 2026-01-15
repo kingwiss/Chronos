@@ -13,9 +13,9 @@ export default defineConfig(({ mode }) => {
       sourcemap: false,
     },
     // Polyfill process.env for Gemini SDK and API keys
+    // Avoid overwriting the entire process.env object to preserve NODE_ENV
     define: {
       'process.env.API_KEY': JSON.stringify(env.API_KEY),
-      'process.env': JSON.stringify(env)
     },
     server: {
       port: 3000,

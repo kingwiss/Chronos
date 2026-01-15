@@ -1,11 +1,17 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ClassificationResult, NoteType, NutritionData } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Lazy initialization prevents top-level crashes if API Key is missing during build/runtime start
+const getAiClient = () => {
+    const key = process.env.API_KEY;
+    // Fallback to avoid constructor error, though API calls will fail if key is invalid
+    return new GoogleGenAI({ apiKey: key || 'dummy_key_for_init' });
+};
 
 // Generate a cute animated image for a note
 export const generateNoteImage = async (prompt: string): Promise<string | null> => {
   try {
+     const ai = getAiClient();
      const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
@@ -31,6 +37,7 @@ export const generateNoteImage = async (prompt: string): Promise<string | null> 
 // Unified function to handle Text, Image, or Both
 export const processMultiModalInput = async (text: string, base64Image?: string): Promise<ClassificationResult> => {
   try {
+      const ai = getAiClient();
       // Use gemini-2.5-flash-image for multimodal tasks (image present), otherwise gemini-3-flash-preview for pure text logic
       const isImageModel = !!base64Image;
       const modelId = isImageModel ? "gemini-2.5-flash-image" : "gemini-3-flash-preview";
@@ -143,6 +150,7 @@ export const processMultiModalInput = async (text: string, base64Image?: string)
 // Edit a specific note
 export const editNoteWithAI = async (originalContent: string, instruction: string): Promise<string> => {
   try {
+      const ai = getAiClient();
       const modelId = "gemini-3-flash-preview";
       
       const response = await ai.models.generateContent({
