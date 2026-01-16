@@ -63,6 +63,10 @@ const App: React.FC = () => {
     let unsubscribe = () => {};
     if (auth) {
         unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+            // Strict Isolation: Show loader and clear notes immediately when switching users
+            setIsAuthLoading(true);
+            setNotes([]); 
+            
             setUser(currentUser);
             await loadData();
             setIsAuthLoading(false);
@@ -359,7 +363,15 @@ const App: React.FC = () => {
 
   const handleSmartUpdate = async (id: string, newText: string) => {
     const allowed = await attemptSmartFeature();
-    if (!allowed) return;
+    
+    // Fallback: If limit reached, still allow saving the text edit!
+    if (!allowed) {
+        const existing = notes.find(n => n.id === id);
+        if (existing) {
+             await updateNoteInternal({ ...existing, content: newText });
+        }
+        return;
+    }
 
     const existing = notes.find(n => n.id === id);
     if (!existing) return;
