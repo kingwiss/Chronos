@@ -7,9 +7,10 @@ interface AuthModalProps {
   onClose: () => void;
   onSuccess: () => void;
   isDarkMode: boolean;
+  message?: string;
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onSuccess, isDarkMode }) => {
+export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onSuccess, isDarkMode, message }) => {
   const [isSignUp, setIsSignUp] = useState(false);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -29,7 +30,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onSuccess, isDark
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
       onSuccess();
-      onClose();
     } catch (err: any) {
       console.error(err);
       if (err.code === 'auth/invalid-credential') {
@@ -85,7 +85,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onSuccess, isDark
         await signInWithEmailAndPassword(auth, email, password);
       }
       onSuccess();
-      onClose();
     } catch (err: any) {
       console.error(err);
       let msg = 'Authentication failed';
@@ -122,9 +121,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onClose, onSuccess, isDark
           <h2 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-zinc-900'}`}>
             {isSignUp ? 'Create Account' : 'Welcome Back'}
           </h2>
-          <p className={`text-sm mt-2 ${isDarkMode ? 'text-zinc-400' : 'text-zinc-500'}`}>
-            Sign in to sync your notes across devices.
-          </p>
+          
+          {message ? (
+             <div className="mt-4 p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-sm text-indigo-400 font-medium animate-in fade-in slide-in-from-top-2">
+                {message}
+             </div>
+          ) : (
+             <p className={`text-sm mt-2 ${isDarkMode ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                Sign in to sync your notes across devices.
+             </p>
+          )}
         </div>
 
         {error && (

@@ -24,6 +24,7 @@ const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isPremium, setIsPremium] = useState(false);
   const [usageCount, setUsageCount] = useState(0);
@@ -78,23 +79,6 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  useEffect(() => {
-      if (isPremium || isAuthLoading) return;
-      const timers: ReturnType<typeof setTimeout>[] = [];
-      const isPremiumRef = { current: isPremium }; 
-
-      const schedule = [2 * 60 * 1000, 9 * 60 * 1000, 16 * 60 * 1000];
-      schedule.forEach(delay => {
-          const timer = setTimeout(() => {
-              if (!isPremiumRef.current && !showAuthModal && !showNoteMaker && !isCameraOpen) {
-                  setShowPremiumModal(true);
-              }
-          }, delay);
-          timers.push(timer);
-      });
-      return () => timers.forEach(clearTimeout);
-  }, [isPremium, showAuthModal, showNoteMaker, isCameraOpen, isAuthLoading]);
-
   const loadData = async () => {
       const fetchedNotes = await getNotes();
       if (fetchedNotes.length === 0 && !auth?.currentUser) {
@@ -119,17 +103,46 @@ const App: React.FC = () => {
   }, [isDarkMode]);
 
   const attemptSmartFeature = async (): Promise<boolean> => {
+      // 1. Get latest stats
       const stats = await getUserStats();
       setIsPremium(stats.isPremium);
       setUsageCount(stats.count);
+
+      // 2. If Premium, allow everything
       if (stats.isPremium) return true;
+
+      // 3. Check Limit (10 per week)
       if (stats.count >= 10) {
-          setShowPremiumModal(true);
+          if (!user) {
+              // Guest hit limit -> Must Log In
+              setAuthMessage("You've reached your weekly limit of 10 smart actions. Log in to upgrade to Premium for unlimited access.");
+              setShowAuthModal(true);
+          } else {
+              // User hit limit -> Must Pay
+              setShowPremiumModal(true);
+          }
           return false;
       }
+
+      // 4. Increment and Allow
       await incrementUsage();
       setUsageCount(prev => prev + 1);
       return true;
+  };
+
+  const handleAuthSuccess = async () => {
+      await loadData();
+      setShowAuthModal(false);
+      
+      // If user logged in because they hit a limit, check if they need to pay
+      if (authMessage) {
+          setAuthMessage('');
+          const stats = await getUserStats();
+          if (!stats.isPremium) {
+              // Prompt upgrade immediately if they are still free tier
+              setShowPremiumModal(true);
+          }
+      }
   };
 
   useEffect(() => {
@@ -481,9 +494,11 @@ const App: React.FC = () => {
     let aiImage = undefined;
     
     const allowed = await attemptSmartFeature();
+    if (!allowed) return;
+
     const prompt = data.visualDescription || data.content;
     
-    if (allowed && prompt) {
+    if (prompt) {
        const gen = await generateNoteImage(prompt);
        if (gen) aiImage = `data:image/jpeg;base64,${gen}`;
     }
@@ -567,7 +582,15 @@ const App: React.FC = () => {
         onChange={handleImageSelect}
       />
 
-      {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} onSuccess={loadData} isDarkMode={isDarkMode} />}
+      {showAuthModal && (
+        <AuthModal 
+          onClose={() => { setShowAuthModal(false); setAuthMessage(''); }} 
+          onSuccess={handleAuthSuccess} 
+          isDarkMode={isDarkMode} 
+          message={authMessage}
+        />
+      )}
+      
       {showPremiumModal && <PremiumModal onClose={() => setShowPremiumModal(false)} onSuccess={loadData} isDarkMode={isDarkMode} />}
 
       {ringingAlarm && (
