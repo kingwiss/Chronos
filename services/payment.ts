@@ -2,19 +2,21 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import { app } from '../lib/firebase';
 
 export const createPaymentIntent = async (amount: number) => {
+  const functions = getFunctions(app);
+  // Ensure your Firebase Function is deployed and named 'createPaymentIntent'
+  const createPaymentIntentFunction = httpsCallable(functions, 'createPaymentIntent');
+  
   try {
-    const functions = getFunctions(app);
-    const createPaymentIntentFunction = httpsCallable(functions, 'createPaymentIntent');
-    
     const result: any = await createPaymentIntentFunction({ amount });
-    return result.data.clientSecret;
-  } catch (error) {
-    console.warn("Backend payment init failed. Falling back to DEMO MODE for GitHub Pages.", error);
     
-    // Simulate a network delay
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    if (!result.data || !result.data.clientSecret) {
+      throw new Error("Invalid response from payment server. Please try again.");
+    }
 
-    // Throw a specific error that the PremiumModal can catch to enable 'Demo Mode'
-    throw new Error("DEMO_MODE");
+    return result.data.clientSecret;
+  } catch (error: any) {
+    console.error("Payment initialization failed:", error);
+    // Propagate the real error to the UI
+    throw new Error(error.message || "Payment service unavailable.");
   }
 };

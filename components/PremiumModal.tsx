@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Check, Sparkles, Loader2, Zap, Lock } from 'lucide-react';
+import { X, Check, Sparkles, Loader2, Zap, Lock, RefreshCw } from 'lucide-react';
 import { setPremiumStatus } from '../services/storage';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -60,7 +60,7 @@ const CheckoutForm: React.FC<{ onSuccess: () => void; onClose: () => void; isDar
             </div>
             
             {errorMessage && (
-                <div className="text-red-500 text-xs text-center p-2 bg-red-500/10 rounded-lg">
+                <div className="text-red-500 text-xs text-center p-2 bg-red-500/10 rounded-lg animate-in fade-in">
                     {errorMessage}
                 </div>
             )}
@@ -90,12 +90,11 @@ export const PremiumModal: React.FC<PremiumModalProps> = ({ onClose, onSuccess, 
       setIsLoadingSecret(true);
       setInitError('');
       try {
-          // In a real app, this calls your backend. Here we simulate the backend call.
           const secret = await createPaymentIntent(699); // $6.99 in cents
           setClientSecret(secret);
       } catch (e: any) {
           console.error(e);
-          setInitError("Unable to initialize payment system. CORS policy on the demo environment may be blocking direct Stripe API calls. Please deploy the backend code.");
+          setInitError(e.message || "Unable to initialize payment system.");
       } finally {
           setIsLoadingSecret(false);
       }
@@ -143,7 +142,17 @@ export const PremiumModal: React.FC<PremiumModalProps> = ({ onClose, onSuccess, 
                     <span className={`text-sm ${isDarkMode ? 'text-zinc-500' : 'text-zinc-400'}`}> / month</span>
                 </div>
                 
-                {initError && <div className="text-xs text-red-500 text-center px-4">{initError}</div>}
+                {initError && (
+                    <div className="flex flex-col items-center gap-2 p-3 bg-red-500/10 rounded-lg text-red-500 text-sm text-center">
+                        <p>{initError}</p>
+                        <button 
+                            onClick={initializePayment}
+                            className="text-xs font-bold underline flex items-center gap-1 hover:text-red-400"
+                        >
+                            <RefreshCw className="w-3 h-3" /> Retry
+                        </button>
+                    </div>
+                )}
 
                 <button 
                     onClick={initializePayment}
