@@ -29,22 +29,30 @@ const getWeekStart = () => {
 };
 
 // --- KEY GENERATORS ---
-// Dynamically generate storage keys based on the current user UID
-// This ensures that User A sees only User A's data, User B sees User B's, and Guests see Guest data.
-const getUserId = () => auth.currentUser?.uid || 'guest';
-
-const getNotesKey = () => `chronos_notes_${getUserId()}`;
-const getStatsKey = () => `chronos_stats_${getUserId()}`;
+// Helper to determine the effective user ID and storage key
+// explicitUserId: passed from the UI context to ensure we are working with the intended user
+const getUserContext = (explicitUserId?: string | null) => {
+    // If explicitUserId is provided (including null for guest), use it.
+    // Otherwise fallback to current auth state.
+    const uid = explicitUserId !== undefined ? explicitUserId : (auth.currentUser?.uid || null);
+    const isGuest = !uid || uid === 'guest';
+    const effectiveUid = isGuest ? 'guest' : uid;
+    
+    return {
+        uid: effectiveUid,
+        isGuest,
+        notesKey: `chronos_notes_${effectiveUid}`,
+        statsKey: `chronos_stats_${effectiveUid}`
+    };
+};
 
 // --- STORAGE FUNCTIONS ---
 
-export const getNotes = async (): Promise<Note[]> => {
-  const uid = auth.currentUser?.uid;
-  const localKey = getNotesKey();
+export const getNotes = async (userId?: string | null): Promise<Note[]> => {
+  const { uid, isGuest, notesKey } = getUserContext(userId);
   
   // 1. Load Local Cache First (Instant Render)
-  // This uses the dynamic key, so it will only load data for the currently logged-in user (or guest)
-  const localData = localStorage.getItem(localKey);
+  const localData = localStorage.getItem(notesKey);
   let notes: Note[] = [];
   
   if (localData) {
@@ -62,7 +70,7 @@ export const getNotes = async (): Promise<Note[]> => {
   }
 
   // 2. If User is Logged In, Sync with Cloud
-  if (uid) {
+  if (!isGuest && uid) {
     try {
       // Use subcollection for strict isolation: users/{uid}/notes
       const notesRef = collection(db, 'users', uid, 'notes');
@@ -84,7 +92,7 @@ export const getNotes = async (): Promise<Note[]> => {
         notes = remoteNotes.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         
         // Update Local Cache with specific user key so next refresh is fast
-        localStorage.setItem(localKey, JSON.stringify(notes));
+        localStorage.setItem(notesKey, JSON.stringify(notes));
       }
     } catch (error) {
        console.warn("Sync failed or offline, using local cache.", error);
@@ -94,13 +102,11 @@ export const getNotes = async (): Promise<Note[]> => {
   return notes.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 };
 
-export const saveNote = async (note: Note) => {
-  const uid = auth.currentUser?.uid;
-  const localKey = getNotesKey();
+export const saveNote = async (note: Note, userId?: string | null) => {
+  const { uid, isGuest, notesKey } = getUserContext(userId);
 
   // 1. Update Local Cache (Optimistic UI)
-  // We re-fetch here to ensure we are appending to the correct list in memory
-  const localData = localStorage.getItem(localKey);
+  const localData = localStorage.getItem(notesKey);
   let currentNotes: Note[] = localData ? JSON.parse(localData).map((n: any) => ({ ...n, createdAt: new Date(n.createdAt) })) : [];
 
   const index = currentNotes.findIndex(n => n.id === note.id);
@@ -111,10 +117,10 @@ export const saveNote = async (note: Note) => {
       currentNotes = [note, ...currentNotes];
   }
   
-  localStorage.setItem(localKey, JSON.stringify(currentNotes));
+  localStorage.setItem(notesKey, JSON.stringify(currentNotes));
 
   // 2. Update Cloud if Logged In
-  if (uid) {
+  if (!isGuest && uid) {
       try {
           const noteRef = doc(db, 'users', uid, 'notes', note.id);
           // Convert Dates to Timestamps for Firestore
@@ -129,20 +135,19 @@ export const saveNote = async (note: Note) => {
   }
 };
 
-export const deleteNoteById = async (id: string) => {
-    const uid = auth.currentUser?.uid;
-    const localKey = getNotesKey();
+export const deleteNoteById = async (id: string, userId?: string | null) => {
+    const { uid, isGuest, notesKey } = getUserContext(userId);
 
     // 1. Update Local
-    const localData = localStorage.getItem(localKey);
+    const localData = localStorage.getItem(notesKey);
     if (localData) {
         const parsed = JSON.parse(localData);
         const filtered = parsed.filter((n: any) => n.id !== id);
-        localStorage.setItem(localKey, JSON.stringify(filtered));
+        localStorage.setItem(notesKey, JSON.stringify(filtered));
     }
 
     // 2. Update Cloud
-    if (uid) {
+    if (!isGuest && uid) {
         try {
             const noteRef = doc(db, 'users', uid, 'notes', id);
             await deleteDoc(noteRef);
@@ -160,28 +165,27 @@ const DEFAULT_STATS: UsageStats = {
     isPremium: false
 };
 
-export const getUserStats = async (): Promise<UsageStats> => {
-    const uid = auth.currentUser?.uid;
-    const localKey = getStatsKey();
+export const getUserStats = async (userId?: string | null): Promise<UsageStats> => {
+    const { uid, isGuest, statsKey } = getUserContext(userId);
     const currentWeekStart = getWeekStart();
 
     let stats = DEFAULT_STATS;
 
     // Load Local
-    const localData = localStorage.getItem(localKey);
+    const localData = localStorage.getItem(statsKey);
     if (localData) {
         const parsed = JSON.parse(localData);
         // Reset if week changed
         if (parsed.weekStart !== currentWeekStart) {
             stats = { ...parsed, count: 0, weekStart: currentWeekStart };
-            localStorage.setItem(localKey, JSON.stringify(stats));
+            localStorage.setItem(statsKey, JSON.stringify(stats));
         } else {
             stats = parsed;
         }
     }
 
     // Sync Remote
-    if (uid) {
+    if (!isGuest && uid) {
         try {
             const statsRef = doc(db, 'users', uid, 'settings', 'stats');
             const snap = await withTimeout(getDoc(statsRef)) as DocumentSnapshot<DocumentData>;
@@ -198,7 +202,7 @@ export const getUserStats = async (): Promise<UsageStats> => {
                      stats = remoteData;
                 }
                 // Update local
-                localStorage.setItem(localKey, JSON.stringify(stats));
+                localStorage.setItem(statsKey, JSON.stringify(stats));
             } else {
                 // If remote document doesn't exist yet, initialize it
                 await setDoc(statsRef, stats);
@@ -211,16 +215,16 @@ export const getUserStats = async (): Promise<UsageStats> => {
     return stats;
 };
 
-export const incrementUsage = async () => {
-    const stats = await getUserStats();
+export const incrementUsage = async (userId?: string | null) => {
+    const { uid, isGuest, statsKey } = getUserContext(userId);
+    const stats = await getUserStats(uid); // pass uid to ensure we get correct stats
     const newStats = { ...stats, count: stats.count + 1 };
     
     // Update Local
-    localStorage.setItem(getStatsKey(), JSON.stringify(newStats));
+    localStorage.setItem(statsKey, JSON.stringify(newStats));
 
     // Update Remote
-    const uid = auth.currentUser?.uid;
-    if (uid) {
+    if (!isGuest && uid) {
         try {
             const statsRef = doc(db, 'users', uid, 'settings', 'stats');
             await setDoc(statsRef, newStats, { merge: true });
@@ -228,16 +232,16 @@ export const incrementUsage = async () => {
     }
 };
 
-export const setPremiumStatus = async (isPremium: boolean) => {
-    const stats = await getUserStats();
+export const setPremiumStatus = async (isPremium: boolean, userId?: string | null) => {
+    const { uid, isGuest, statsKey } = getUserContext(userId);
+    const stats = await getUserStats(uid);
     const newStats = { ...stats, isPremium };
     
     // Update Local
-    localStorage.setItem(getStatsKey(), JSON.stringify(newStats));
+    localStorage.setItem(statsKey, JSON.stringify(newStats));
     
     // Update Remote
-    const uid = auth.currentUser?.uid;
-    if (uid) {
+    if (!isGuest && uid) {
         try {
              const statsRef = doc(db, 'users', uid, 'settings', 'stats');
              await setDoc(statsRef, newStats, { merge: true });

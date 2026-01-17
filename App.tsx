@@ -68,11 +68,12 @@ const App: React.FC = () => {
             setNotes([]); 
             
             setUser(currentUser);
-            await loadData();
+            // Pass the explicit UID to ensure we get the correct data
+            await loadData(currentUser?.uid || null);
             setIsAuthLoading(false);
         });
     } else {
-        loadData().then(() => setIsAuthLoading(false));
+        loadData(null).then(() => setIsAuthLoading(false));
     }
 
     const savedTheme = localStorage.getItem('chronos_theme');
@@ -83,9 +84,12 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  const loadData = async () => {
-      const fetchedNotes = await getNotes();
-      if (fetchedNotes.length === 0 && !auth?.currentUser) {
+  // loadData now requires an explicit UID to guarantee isolation
+  const loadData = async (uid: string | null) => {
+      const fetchedNotes = await getNotes(uid);
+      
+      // If guest and no notes, create welcome note
+      if (fetchedNotes.length === 0 && !uid) {
           const welcomeNote: Note = {
             id: 'init',
             createdAt: new Date(),
@@ -93,11 +97,12 @@ const App: React.FC = () => {
             content: 'Welcome to Chronos! I can track your nutrition from photos, set alarms, log steps, and keep your memos organized. Try uploading a photo of your lunch or typing "Wake me up at 7am".'
           };
           setNotes([welcomeNote]);
-          saveNote(welcomeNote);
+          saveNote(welcomeNote, uid);
       } else {
           setNotes(fetchedNotes);
       }
-      const stats = await getUserStats();
+      
+      const stats = await getUserStats(uid);
       setIsPremium(stats.isPremium);
       setUsageCount(stats.count);
   };
@@ -107,8 +112,9 @@ const App: React.FC = () => {
   }, [isDarkMode]);
 
   const attemptSmartFeature = async (): Promise<boolean> => {
-      // 1. Get latest stats
-      const stats = await getUserStats();
+      // 1. Get latest stats using current user ID
+      const currentUid = user?.uid || null;
+      const stats = await getUserStats(currentUid);
       setIsPremium(stats.isPremium);
       setUsageCount(stats.count);
 
@@ -129,23 +135,26 @@ const App: React.FC = () => {
       }
 
       // 4. Increment and Allow
-      await incrementUsage();
+      await incrementUsage(currentUid);
       setUsageCount(prev => prev + 1);
       return true;
   };
 
   const handleAuthSuccess = async () => {
-      await loadData();
+      // Note: onAuthStateChanged will trigger loadData, so we just handle UI here
       setShowAuthModal(false);
       
       // If user logged in because they hit a limit, check if they need to pay
       if (authMessage) {
           setAuthMessage('');
-          const stats = await getUserStats();
-          if (!stats.isPremium) {
-              // Prompt upgrade immediately if they are still free tier
-              setShowPremiumModal(true);
-          }
+          // Allow onAuthStateChanged to settle user state first
+          setTimeout(async () => {
+              const currentUid = auth.currentUser?.uid || null;
+              const stats = await getUserStats(currentUid);
+              if (!stats.isPremium) {
+                  setShowPremiumModal(true);
+              }
+          }, 1000);
       }
   };
 
@@ -335,8 +344,10 @@ const App: React.FC = () => {
       if (alarmToRing) {
         setRingingAlarm(alarmToRing);
         const updated = { ...alarmToRing, alarm: { ...alarmToRing.alarm!, fired: true } };
+        // Use user?.uid here or pass null safely
+        const currentUid = user?.uid || null;
         setNotes(prev => prev.map(n => n.id === updated.id ? updated : n));
-        saveNote(updated);
+        saveNote(updated, currentUid);
 
         startAlarmSound();
         alarmIntervalRef.current = window.setInterval(startAlarmSound, 1500);
@@ -344,23 +355,34 @@ const App: React.FC = () => {
     };
     const intervalId = setInterval(checkAlarms, 1000); 
     return () => clearInterval(intervalId);
-  }, [notes, ringingAlarm]);
+  }, [notes, ringingAlarm, user]);
 
   const addNoteInternal = async (note: Note) => {
-    setNotes(prev => [note, ...prev]);
-    // Optimization: Don't await saveNote. This prevents UI blocking if Firebase is slow/offline.
-    // saveNote updates local storage synchronously first, so data is safe locally.
-    saveNote(note).catch(err => console.error("Failed to sync note to cloud:", err));
+    const currentUid = user?.uid || null;
+    
+    setNotes(prev => {
+        // SAFEGUARD: Prevent Duplicate Notes
+        // If a note with this ID already exists, do NOT add it again.
+        if (prev.some(n => n.id === note.id)) {
+            return prev;
+        }
+        return [note, ...prev];
+    });
+
+    // Optimization: Don't await saveNote. This prevents UI blocking.
+    saveNote(note, currentUid).catch(err => console.error("Failed to sync note to cloud:", err));
   };
 
   const updateNoteInternal = async (updatedNote: Note) => {
+    const currentUid = user?.uid || null;
     setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
-    saveNote(updatedNote).catch(err => console.error("Failed to sync update to cloud:", err));
+    saveNote(updatedNote, currentUid).catch(err => console.error("Failed to sync update to cloud:", err));
   };
 
   const deleteNoteInternal = async (id: string) => {
+    const currentUid = user?.uid || null;
     setNotes(prev => prev.filter(n => n.id !== id));
-    deleteNoteById(id).catch(err => console.error("Failed to sync delete to cloud:", err));
+    deleteNoteById(id, currentUid).catch(err => console.error("Failed to sync delete to cloud:", err));
   };
 
   const handleSmartUpdate = async (id: string, newText: string) => {
@@ -439,6 +461,9 @@ const App: React.FC = () => {
     const tempId = crypto.randomUUID();
     const createdAt = new Date();
     
+    // Capture user ID at start of process to ensure consistency during async operations
+    const currentUid = user?.uid || null;
+
     // Construct initial note for immediate display (Optimistic UI)
     const initialNote: Note = {
         id: tempId,
@@ -460,7 +485,6 @@ const App: React.FC = () => {
     }
 
     // 2. Render Immediately (Unblock UI)
-    // Note: addNoteInternal no longer awaits cloud save, so this returns instantly
     await addNoteInternal(initialNote);
     
     // Reset UI states immediately
@@ -470,6 +494,9 @@ const App: React.FC = () => {
     // 3. Background Processing (Fire and Forget)
     (async () => {
         try {
+            // Safety check: If user switched accounts while processing, abort
+            if ((auth.currentUser?.uid || null) !== currentUid) return;
+
             // If explicit type was set manually (not MEMO), we usually don't need AI classification
             // unless there is an image attachment that needs analysis (e.g. food)
             const isManualType = draft.type !== NoteType.MEMO;
@@ -643,7 +670,7 @@ const App: React.FC = () => {
         />
       )}
       
-      {showPremiumModal && <PremiumModal onClose={() => setShowPremiumModal(false)} onSuccess={loadData} isDarkMode={isDarkMode} />}
+      {showPremiumModal && <PremiumModal onClose={() => setShowPremiumModal(false)} onSuccess={() => loadData(user?.uid || null)} isDarkMode={isDarkMode} />}
 
       {ringingAlarm && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-xl animate-in fade-in">
