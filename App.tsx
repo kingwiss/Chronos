@@ -348,17 +348,19 @@ const App: React.FC = () => {
 
   const addNoteInternal = async (note: Note) => {
     setNotes(prev => [note, ...prev]);
-    await saveNote(note);
+    // Optimization: Don't await saveNote. This prevents UI blocking if Firebase is slow/offline.
+    // saveNote updates local storage synchronously first, so data is safe locally.
+    saveNote(note).catch(err => console.error("Failed to sync note to cloud:", err));
   };
 
   const updateNoteInternal = async (updatedNote: Note) => {
     setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
-    await saveNote(updatedNote);
+    saveNote(updatedNote).catch(err => console.error("Failed to sync update to cloud:", err));
   };
 
   const deleteNoteInternal = async (id: string) => {
     setNotes(prev => prev.filter(n => n.id !== id));
-    await deleteNoteById(id);
+    deleteNoteById(id).catch(err => console.error("Failed to sync delete to cloud:", err));
   };
 
   const handleSmartUpdate = async (id: string, newText: string) => {
@@ -458,6 +460,7 @@ const App: React.FC = () => {
     }
 
     // 2. Render Immediately (Unblock UI)
+    // Note: addNoteInternal no longer awaits cloud save, so this returns instantly
     await addNoteInternal(initialNote);
     
     // Reset UI states immediately

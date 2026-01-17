@@ -312,11 +312,15 @@ export const NoteMakerModal: React.FC<NoteMakerModalProps> = ({
       setIsSaving(true);
       await cleanupAudio();
       
-      await onSave({
-          content,
-          type: draftType,
-          ...draftMetadata
-      });
+      try {
+        await onSave({
+            content,
+            type: draftType,
+            ...draftMetadata
+        });
+      } catch (error) {
+        console.error("Save failed in modal:", error);
+      }
       
       setIsSaving(false);
       onClose();
