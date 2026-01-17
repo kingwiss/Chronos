@@ -290,7 +290,7 @@ const App: React.FC = () => {
       const now = ctx.currentTime;
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(0.5, now + 0.1);
-      gain.gain.linearRampToValueAtTime(0, now + 0.5);
+      gain.gain.linearRampToValueAtTime(0.5, now + 0.5);
       gain.gain.linearRampToValueAtTime(0.5, now + 0.6);
       gain.gain.linearRampToValueAtTime(0.5, now + 1.0);
       osc.start();
@@ -433,72 +433,109 @@ const App: React.FC = () => {
   };
 
   const handleNoteMakerSave = async (draft: DraftData) => {
-    const isImageAnalysis = !!pendingAttachment;
-    let shouldUseAI = false;
-
-    if (isImageAnalysis) {
-        const allowed = await attemptSmartFeature();
-        if (!allowed) return; 
-        shouldUseAI = true;
-    } else {
-        const allowed = await attemptSmartFeature();
-        shouldUseAI = allowed;
-    }
+    // 1. Prepare basics
+    const tempId = crypto.randomUUID();
+    const createdAt = new Date();
     
-    try {
-      let result;
-      let isAiGenerated = false;
-      let finalImageUrl = pendingAttachment ? `data:image/jpeg;base64,${pendingAttachment}` : undefined;
+    // Construct initial note for immediate display (Optimistic UI)
+    const initialNote: Note = {
+        id: tempId,
+        createdAt,
+        type: draft.type,
+        content: draft.content,
+        imageUrl: pendingAttachment ? `data:image/jpeg;base64,${pendingAttachment}` : undefined,
+        isAiImage: false,
+        alarm: draft.alarmTime ? { time: draft.alarmTime, label: draft.content } : undefined,
+        steps: draft.stepsCount ? { count: draft.stepsCount } : undefined,
+        nutrition: draft.nutritionData
+    };
 
-      if (draft.type !== NoteType.MEMO) {
-         result = {
-            type: draft.type,
-            content: draft.content,
-            alarmTime: draft.alarmTime,
-            steps: draft.stepsCount,
-            nutrition: draft.nutritionData,
-            visualDescription: draft.visualDescription
-         };
-      } else if (shouldUseAI) {
-         let promptText = draft.content;
-         if (!promptText && cameraMode === NoteType.NUTRITION) {
-             promptText = "Analyze this food image and provide nutrition data.";
-         }
-         result = await processMultiModalInput(promptText, pendingAttachment || undefined);
-      } else {
-         result = { type: NoteType.MEMO, content: draft.content || "New Note" };
-      }
-
-      if (!pendingAttachment && (result.content || result.visualDescription)) {
-        const prompt = result.visualDescription || result.content;
-        const genImage = await generateNoteImage(prompt);
-        if (genImage) {
-            finalImageUrl = `data:image/jpeg;base64,${genImage}`;
-            isAiGenerated = true;
-        }
-      }
-
-      const newNote: Note = {
-        id: crypto.randomUUID(),
-        createdAt: new Date(),
-        type: result.type,
-        content: result.content,
-        imageUrl: finalImageUrl,
-        isAiImage: isAiGenerated,
-        alarm: (result.type === NoteType.ALARM || result.type === NoteType.TIMER) 
-            ? { time: result.alarmTime || '00:00', label: result.alarmLabel || (result.type === NoteType.TIMER ? 'Timer' : 'Alarm') } 
-            : undefined,
-        steps: result.type === NoteType.STEPS ? { count: result.steps || 0 } : (result.type === NoteType.STEPS_TRACKER ? { count: 0, isLive: true } : undefined),
-        nutrition: result.type === NoteType.NUTRITION ? result.nutrition : undefined
-      };
-
-      await addNoteInternal(newNote);
-      setPendingAttachment(null);
-      setCameraMode(NoteType.MEMO);
-    } catch (error) {
-      console.error("Error processing input:", error);
-      alert("Something went wrong processing your request.");
+    // Handle empty content or analyzing state
+    if (!initialNote.content && pendingAttachment) {
+        initialNote.content = "Analyzing image...";
+    } else if (!initialNote.content) {
+        initialNote.content = "New Note";
     }
+
+    // 2. Render Immediately (Unblock UI)
+    await addNoteInternal(initialNote);
+    
+    // Reset UI states immediately
+    setPendingAttachment(null);
+    setCameraMode(NoteType.MEMO);
+
+    // 3. Background Processing (Fire and Forget)
+    (async () => {
+        try {
+            // If explicit type was set manually (not MEMO), we usually don't need AI classification
+            // unless there is an image attachment that needs analysis (e.g. food)
+            const isManualType = draft.type !== NoteType.MEMO;
+            
+            // Skip smart features if manually typed and no attachment, unless premium
+            if (!pendingAttachment && isManualType) return;
+
+            const allowed = await attemptSmartFeature();
+            if (!allowed) return;
+
+            let updatedNote = { ...initialNote };
+            let processingResult: any = null;
+            let needsUpdate = false;
+
+            // A. Classification / Analysis
+            // Run if it's a generic MEMO or has an attachment
+            if (draft.type === NoteType.MEMO || pendingAttachment) {
+                 let promptText = draft.content;
+                 if (!promptText && cameraMode === NoteType.NUTRITION) {
+                     promptText = "Analyze this food image and provide nutrition data.";
+                 }
+                 
+                 processingResult = await processMultiModalInput(promptText, pendingAttachment || undefined);
+                 
+                 // Update note object with AI results
+                 updatedNote.type = processingResult.type;
+                 updatedNote.content = processingResult.content;
+                 
+                 if (processingResult.type === NoteType.ALARM || processingResult.type === NoteType.TIMER) {
+                     updatedNote.alarm = { 
+                         time: processingResult.alarmTime || '', 
+                         label: processingResult.alarmLabel || processingResult.content 
+                     };
+                 } else if (processingResult.type === NoteType.STEPS) {
+                     updatedNote.steps = { count: processingResult.steps || 0 };
+                 } else if (processingResult.type === NoteType.NUTRITION) {
+                     updatedNote.nutrition = processingResult.nutrition;
+                 }
+                 
+                 needsUpdate = true;
+            }
+
+            // A2. Apply updates from classification
+            if (needsUpdate) {
+                await updateNoteInternal({ ...updatedNote });
+            }
+
+            // B. Image Generation
+            // Generate if no image exists AND we have content/description
+            if (!updatedNote.imageUrl) {
+                const prompt = processingResult?.visualDescription || updatedNote.content;
+                
+                // Only generate if we have a valid prompt and it's not just a short command
+                if (prompt && prompt.length > 3) {
+                    const genImage = await generateNoteImage(prompt);
+                    if (genImage) {
+                        updatedNote.imageUrl = `data:image/jpeg;base64,${genImage}`;
+                        updatedNote.isAiImage = true;
+                        await updateNoteInternal({ ...updatedNote });
+                    }
+                }
+            }
+        } catch (error) {
+            console.error("Background processing error:", error);
+            if (initialNote.content === "Analyzing image...") {
+                updateNoteInternal({ ...initialNote, content: "Processing failed." });
+            }
+        }
+    })();
   };
 
   const handleVoiceNoteCreation = async (data: any) => {
