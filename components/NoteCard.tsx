@@ -123,11 +123,11 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
 
   const cleanupAudio = async () => {
      if (scriptProcessorRef.current) {
-        scriptProcessorRef.current.disconnect();
+        try { scriptProcessorRef.current.disconnect(); } catch(e) {}
         scriptProcessorRef.current = null;
      }
      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
+        try { streamRef.current.getTracks().forEach(t => t.stop()); } catch(e) {}
         streamRef.current = null;
      }
      if (inputContextRef.current) {
@@ -141,10 +141,11 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
      if (sessionRef.current) {
         try {
             const session = await sessionRef.current;
-            session.close();
+            if(session.close) session.close();
         } catch (e) {}
         sessionRef.current = null;
      }
+     sourcesRef.current.clear();
   };
 
   const stopVoiceSession = async () => {
@@ -152,21 +153,32 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
      setVoiceState('idle');
   };
 
-  const startVoiceSession = async () => {
+  const startVoiceSession = async (preInputCtx?: AudioContext, preOutputCtx?: AudioContext) => {
     try {
-       await cleanupAudio(); // Ensure clean slate
        setVoiceState('initializing');
        
-       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+       const apiKey = process.env.API_KEY || '';
+       if (!apiKey) {
+           console.error("No API key found");
+           setVoiceState('idle');
+           return;
+       }
+       const ai = new GoogleGenAI({ apiKey });
 
        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-       const inputAudioContext = new AudioContextClass(); 
-       const outputAudioContext = new AudioContextClass(); 
+       
+       // Use pre-created contexts if available (to satisfy browser autoplay policy)
+       const inputAudioContext = preInputCtx || new AudioContextClass({ sampleRate: 16000 }); 
+       const outputAudioContext = preOutputCtx || new AudioContextClass({ sampleRate: 24000 }); 
        
        inputContextRef.current = inputAudioContext;
        outputContextRef.current = outputAudioContext;
 
-       await Promise.all([inputAudioContext.resume(), outputAudioContext.resume()]);
+       // Ensure resumption even if passed in (idempotent)
+       await Promise.all([
+           inputAudioContext.state === 'suspended' ? inputAudioContext.resume() : Promise.resolve(), 
+           outputAudioContext.state === 'suspended' ? outputAudioContext.resume() : Promise.resolve()
+       ]);
        
        const outputNode = outputAudioContext.createGain();
        outputNode.connect(outputAudioContext.destination);
@@ -350,8 +362,26 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
 
   const toggleVoiceInteraction = async () => {
      if (voiceState === 'idle') {
+        // 1. Initialize Audio Contexts IMMEDIATELY on click to satisfy browser autoplay policy.
+        // This 'user gesture' capture is crucial before any async calls.
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const inputCtx = new AudioContextClass({ sampleRate: 16000 });
+        const outputCtx = new AudioContextClass({ sampleRate: 24000 });
+        
+        // Fire and forget resume to ensure they are active
+        inputCtx.resume().catch(() => {});
+        outputCtx.resume().catch(() => {});
+
+        // 2. Perform async checks (db permissions etc)
         const allowed = await onSmartFeatureAttempt();
-        if (allowed) await startVoiceSession();
+        if (allowed) {
+            // 3. Pass pre-warmed contexts to session
+            await startVoiceSession(inputCtx, outputCtx);
+        } else {
+            // Cleanup if permission denied
+            inputCtx.close();
+            outputCtx.close();
+        }
      } else {
         await stopVoiceSession();
      }
