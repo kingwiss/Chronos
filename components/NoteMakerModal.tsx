@@ -102,11 +102,11 @@ export const NoteMakerModal: React.FC<NoteMakerModalProps> = ({
 
   const cleanupAudio = async () => {
     if (scriptProcessorRef.current) {
-        scriptProcessorRef.current.disconnect();
+        try { scriptProcessorRef.current.disconnect(); } catch(e) {}
         scriptProcessorRef.current = null;
     }
     if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
+        try { streamRef.current.getTracks().forEach(t => t.stop()); } catch(e) {}
         streamRef.current = null;
     }
     if (inputContextRef.current) {
@@ -309,8 +309,12 @@ export const NoteMakerModal: React.FC<NoteMakerModalProps> = ({
 
   const handleSaveClick = async () => {
       if (!content.trim() && !attachment && draftType === NoteType.MEMO) return;
+      
       setIsSaving(true);
-      await cleanupAudio();
+      
+      // FIRE AND FORGET CLEANUP
+      // Do not await this. If audio system hangs, we still want to save.
+      cleanupAudio().catch(e => console.warn("Audio cleanup error", e));
       
       try {
         await onSave({
@@ -320,10 +324,11 @@ export const NoteMakerModal: React.FC<NoteMakerModalProps> = ({
         });
       } catch (error) {
         console.error("Save failed in modal:", error);
+      } finally {
+        // ALWAYS close, even if error
+        setIsSaving(false);
+        onClose();
       }
-      
-      setIsSaving(false);
-      onClose();
   };
 
   // Helper to render type indicator

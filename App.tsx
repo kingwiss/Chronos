@@ -112,8 +112,8 @@ const App: React.FC = () => {
   }, [isDarkMode]);
 
   const attemptSmartFeature = async (): Promise<boolean> => {
-      // 1. Get latest stats using current user ID
-      const currentUid = user?.uid || null;
+      // 1. Get latest stats using current user ID from Auth (Fresh)
+      const currentUid = auth.currentUser?.uid || null;
       const stats = await getUserStats(currentUid);
       setIsPremium(stats.isPremium);
       setUsageCount(stats.count);
@@ -123,7 +123,7 @@ const App: React.FC = () => {
 
       // 3. Check Limit (10 per week)
       if (stats.count >= 10) {
-          if (!user) {
+          if (!auth.currentUser) {
               // Guest hit limit -> Must Log In
               setAuthMessage("You've reached your weekly limit of 10 smart actions. Log in to upgrade to Premium for unlimited access.");
               setShowAuthModal(true);
@@ -344,8 +344,8 @@ const App: React.FC = () => {
       if (alarmToRing) {
         setRingingAlarm(alarmToRing);
         const updated = { ...alarmToRing, alarm: { ...alarmToRing.alarm!, fired: true } };
-        // Use user?.uid here or pass null safely
-        const currentUid = user?.uid || null;
+        // Use auth.currentUser directly to avoid stale closures
+        const currentUid = auth.currentUser?.uid || null;
         setNotes(prev => prev.map(n => n.id === updated.id ? updated : n));
         saveNote(updated, currentUid);
 
@@ -358,7 +358,7 @@ const App: React.FC = () => {
   }, [notes, ringingAlarm, user]);
 
   const addNoteInternal = async (note: Note) => {
-    const currentUid = user?.uid || null;
+    const currentUid = auth.currentUser?.uid || null;
     
     setNotes(prev => {
         // SAFEGUARD: Prevent Duplicate Notes
@@ -374,13 +374,13 @@ const App: React.FC = () => {
   };
 
   const updateNoteInternal = async (updatedNote: Note) => {
-    const currentUid = user?.uid || null;
+    const currentUid = auth.currentUser?.uid || null;
     setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
     saveNote(updatedNote, currentUid).catch(err => console.error("Failed to sync update to cloud:", err));
   };
 
   const deleteNoteInternal = async (id: string) => {
-    const currentUid = user?.uid || null;
+    const currentUid = auth.currentUser?.uid || null;
     setNotes(prev => prev.filter(n => n.id !== id));
     deleteNoteById(id, currentUid).catch(err => console.error("Failed to sync delete to cloud:", err));
   };
@@ -462,7 +462,7 @@ const App: React.FC = () => {
     const createdAt = new Date();
     
     // Capture user ID at start of process to ensure consistency during async operations
-    const currentUid = user?.uid || null;
+    const currentUid = auth.currentUser?.uid || null;
 
     // Construct initial note for immediate display (Optimistic UI)
     const initialNote: Note = {
