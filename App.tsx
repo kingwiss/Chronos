@@ -15,7 +15,6 @@ import { PremiumModal } from './components/PremiumModal';
 const App: React.FC = () => {
   const [notes, setNotes] = useState<Note[]>([]);
   const [pendingAttachment, setPendingAttachment] = useState<string | null>(null);
-  const [focusedNoteId, setFocusedNoteId] = useState<string | null>(null);
   
   // Theme State
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -112,18 +111,22 @@ const App: React.FC = () => {
   }, [isDarkMode]);
 
   const attemptSmartFeature = async (): Promise<boolean> => {
-      // 1. Get latest stats using current user ID from Auth (Fresh)
+      // 1. Get current UID from Auth source of truth
       const currentUid = auth.currentUser?.uid || null;
+      
+      // 2. Fetch fresh stats from storage service (do not rely on potentially stale UI state)
       const stats = await getUserStats(currentUid);
+      
+      // Update UI state for display
       setIsPremium(stats.isPremium);
       setUsageCount(stats.count);
 
-      // 2. If Premium, allow everything
+      // 3. Logic Check
       if (stats.isPremium) return true;
 
-      // 3. Check Limit (10 per week)
+      // 10 Smart Features Per Week Limit
       if (stats.count >= 10) {
-          if (!auth.currentUser) {
+          if (!currentUid) {
               // Guest hit limit -> Must Log In
               setAuthMessage("You've reached your weekly limit of 10 smart actions. Log in to upgrade to Premium for unlimited access.");
               setShowAuthModal(true);
@@ -141,21 +144,16 @@ const App: React.FC = () => {
   };
 
   const handleAuthSuccess = async () => {
-      // Note: onAuthStateChanged will trigger loadData, so we just handle UI here
       setShowAuthModal(false);
-      
-      // If user logged in because they hit a limit, check if they need to pay
-      if (authMessage) {
+      // Wait for Auth State Change to trigger loadData, then check if we need to show Premium Modal
+      setTimeout(async () => {
+          const currentUid = auth.currentUser?.uid || null;
+          const stats = await getUserStats(currentUid);
+          if (!stats.isPremium && authMessage.includes("limit")) {
+              setShowPremiumModal(true);
+          }
           setAuthMessage('');
-          // Allow onAuthStateChanged to settle user state first
-          setTimeout(async () => {
-              const currentUid = auth.currentUser?.uid || null;
-              const stats = await getUserStats(currentUid);
-              if (!stats.isPremium) {
-                  setShowPremiumModal(true);
-              }
-          }, 1000);
-      }
+      }, 1000);
   };
 
   useEffect(() => {

@@ -9,8 +9,7 @@ interface UsageStats {
 }
 
 // --- Helper: Timeout Wrapper ---
-// Forces a promise to reject if it takes longer than 2 seconds, allowing quick fallback
-const withTimeout = <T>(promise: Promise<T>, ms: number = 2000): Promise<T> => {
+const withTimeout = <T>(promise: Promise<T>, ms: number = 3000): Promise<T> => {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("Firestore operation timed out")), ms);
         promise.then(
@@ -21,6 +20,7 @@ const withTimeout = <T>(promise: Promise<T>, ms: number = 2000): Promise<T> => {
 };
 
 // --- Helper: Get Current Week Start ---
+// Returns midnight on Sunday of the current week to ensure consistent resets
 const getWeekStart = () => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -29,11 +29,8 @@ const getWeekStart = () => {
 };
 
 // --- KEY GENERATORS ---
-// Helper to determine the effective user ID and storage key
-// explicitUserId: passed from the UI context to ensure we are working with the intended user
 const getUserContext = (explicitUserId?: string | null) => {
-    // If explicitUserId is provided (including null for guest), use it.
-    // Otherwise fallback to current auth state.
+    // Priority: Explicit ID -> Auth ID -> Guest
     const uid = explicitUserId !== undefined ? explicitUserId : (auth.currentUser?.uid || null);
     const isGuest = !uid || uid === 'guest';
     const effectiveUid = isGuest ? 'guest' : uid;
@@ -41,6 +38,7 @@ const getUserContext = (explicitUserId?: string | null) => {
     return {
         uid: effectiveUid,
         isGuest,
+        // Unique keys for every user ensure strict data isolation on the same device
         notesKey: `chronos_notes_${effectiveUid}`,
         statsKey: `chronos_stats_${effectiveUid}`
     };
@@ -61,7 +59,6 @@ export const getNotes = async (userId?: string | null): Promise<Note[]> => {
           notes = parsed.map((n: any) => ({
               ...n,
               createdAt: new Date(n.createdAt),
-              // Restore dates in nested objects if necessary
               alarm: n.alarm ? { ...n.alarm } : undefined
           }));
       } catch (e) {
@@ -72,10 +69,7 @@ export const getNotes = async (userId?: string | null): Promise<Note[]> => {
   // 2. If User is Logged In, Sync with Cloud
   if (!isGuest && uid) {
     try {
-      // Use subcollection for strict isolation: users/{uid}/notes
       const notesRef = collection(db, 'users', uid, 'notes');
-      
-      // Use timeout to prevent hanging if offline
       const snapshot = await withTimeout(getDocs(notesRef)) as QuerySnapshot<DocumentData>;
       
       if (!snapshot.empty) {
@@ -88,10 +82,8 @@ export const getNotes = async (userId?: string | null): Promise<Note[]> => {
            } as Note;
         });
 
-        // Merge/Sort logic: Remote is truth for authenticated users
+        // Remote is truth. Overwrite local cache to ensure consistency across devices.
         notes = remoteNotes.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-        
-        // Update Local Cache with specific user key so next refresh is fast
         localStorage.setItem(notesKey, JSON.stringify(notes));
       }
     } catch (error) {
@@ -105,33 +97,21 @@ export const getNotes = async (userId?: string | null): Promise<Note[]> => {
 export const saveNote = async (note: Note, userId?: string | null) => {
   const { uid, isGuest, notesKey } = getUserContext(userId);
 
-  // 1. Update Local Cache (Optimistic UI)
+  // 1. Update Local Cache
   const localData = localStorage.getItem(notesKey);
   let currentNotes: Note[] = localData ? JSON.parse(localData).map((n: any) => ({ ...n, createdAt: new Date(n.createdAt) })) : [];
-
   const index = currentNotes.findIndex(n => n.id === note.id);
-  
-  if (index >= 0) {
-      currentNotes[index] = note;
-  } else {
-      currentNotes = [note, ...currentNotes];
-  }
-  
+  if (index >= 0) currentNotes[index] = note;
+  else currentNotes = [note, ...currentNotes];
   localStorage.setItem(notesKey, JSON.stringify(currentNotes));
 
-  // 2. Update Cloud if Logged In
+  // 2. Update Cloud
   if (!isGuest && uid) {
       try {
           const noteRef = doc(db, 'users', uid, 'notes', note.id);
-          // Convert Dates to Timestamps for Firestore
-          const firestoreData = {
-              ...note,
-              createdAt: Timestamp.fromDate(note.createdAt)
-          };
+          const firestoreData = { ...note, createdAt: Timestamp.fromDate(note.createdAt) };
           await setDoc(noteRef, firestoreData);
-      } catch (e) {
-          console.error("Cloud save failed", e);
-      }
+      } catch (e) { console.error("Cloud save failed", e); }
   }
 };
 
@@ -151,9 +131,7 @@ export const deleteNoteById = async (id: string, userId?: string | null) => {
         try {
             const noteRef = doc(db, 'users', uid, 'notes', id);
             await deleteDoc(noteRef);
-        } catch (e) {
-            console.error("Cloud delete failed", e);
-        }
+        } catch (e) { console.error("Cloud delete failed", e); }
     }
 };
 
@@ -161,7 +139,7 @@ export const deleteNoteById = async (id: string, userId?: string | null) => {
 
 const DEFAULT_STATS: UsageStats = {
     count: 0,
-    weekStart: getWeekStart(),
+    weekStart: getWeekStart(), // Resets every Sunday
     isPremium: false
 };
 
@@ -171,11 +149,11 @@ export const getUserStats = async (userId?: string | null): Promise<UsageStats> 
 
     let stats = DEFAULT_STATS;
 
-    // Load Local
+    // 1. Load Local
     const localData = localStorage.getItem(statsKey);
     if (localData) {
         const parsed = JSON.parse(localData);
-        // Reset if week changed
+        // Auto-Reset if week has changed
         if (parsed.weekStart !== currentWeekStart) {
             stats = { ...parsed, count: 0, weekStart: currentWeekStart };
             localStorage.setItem(statsKey, JSON.stringify(stats));
@@ -184,7 +162,7 @@ export const getUserStats = async (userId?: string | null): Promise<UsageStats> 
         }
     }
 
-    // Sync Remote
+    // 2. Sync Remote (Source of Truth for Logged In Users)
     if (!isGuest && uid) {
         try {
             const statsRef = doc(db, 'users', uid, 'settings', 'stats');
@@ -192,19 +170,20 @@ export const getUserStats = async (userId?: string | null): Promise<UsageStats> 
             
             if (snap.exists()) {
                 const remoteData = snap.data() as UsageStats;
+                
                 // Check week remotely
                 if (remoteData.weekStart !== currentWeekStart) {
-                     // Reset remote
+                     // Week changed since last remote sync -> Reset Remote
                      const newStats = { ...remoteData, count: 0, weekStart: currentWeekStart };
                      await setDoc(statsRef, newStats, { merge: true });
                      stats = newStats;
                 } else {
                      stats = remoteData;
                 }
-                // Update local
+                // Update local to match remote
                 localStorage.setItem(statsKey, JSON.stringify(stats));
             } else {
-                // If remote document doesn't exist yet, initialize it
+                // Initialize remote if missing
                 await setDoc(statsRef, stats);
             }
         } catch (e) {
@@ -217,7 +196,9 @@ export const getUserStats = async (userId?: string | null): Promise<UsageStats> 
 
 export const incrementUsage = async (userId?: string | null) => {
     const { uid, isGuest, statsKey } = getUserContext(userId);
-    const stats = await getUserStats(uid); // pass uid to ensure we get correct stats
+    
+    // Fetch latest to ensure we are incrementing correct week/count
+    const stats = await getUserStats(uid); 
     const newStats = { ...stats, count: stats.count + 1 };
     
     // Update Local
@@ -237,10 +218,8 @@ export const setPremiumStatus = async (isPremium: boolean, userId?: string | nul
     const stats = await getUserStats(uid);
     const newStats = { ...stats, isPremium };
     
-    // Update Local
     localStorage.setItem(statsKey, JSON.stringify(newStats));
     
-    // Update Remote
     if (!isGuest && uid) {
         try {
              const statsRef = doc(db, 'users', uid, 'settings', 'stats');

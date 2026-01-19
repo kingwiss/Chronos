@@ -702,4 +702,4 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
       )}
     </div>
   );
-};
+}
