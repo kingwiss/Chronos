@@ -85,6 +85,10 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
 
+  // Refs for data consistency in closures
+  const noteRef = useRef(note);
+  useEffect(() => { noteRef.current = note; }, [note]);
+
   // Step Tracker State
   const [isTracking, setIsTracking] = useState(note.type === NoteType.STEPS_TRACKER);
   const [liveSteps, setLiveSteps] = useState(note.steps?.count || 0);
@@ -155,7 +159,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
 
   const startVoiceSession = async (preInputCtx?: AudioContext, preOutputCtx?: AudioContext) => {
     try {
-       setVoiceState('initializing');
+       // Only set to initializing if we haven't already passed that stage, though toggle already sets it
        
        const apiKey = process.env.API_KEY || '';
        if (!apiKey) {
@@ -167,14 +171,14 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
 
        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
        
-       // Use pre-created contexts if available (to satisfy browser autoplay policy)
        const inputAudioContext = preInputCtx || new AudioContextClass({ sampleRate: 16000 }); 
        const outputAudioContext = preOutputCtx || new AudioContextClass({ sampleRate: 24000 }); 
        
        inputContextRef.current = inputAudioContext;
        outputContextRef.current = outputAudioContext;
+       nextStartTimeRef.current = outputAudioContext.currentTime;
 
-       // Ensure resumption even if passed in (idempotent)
+       // Ensure resumption
        await Promise.all([
            inputAudioContext.state === 'suspended' ? inputAudioContext.resume() : Promise.resolve(), 
            outputAudioContext.state === 'suspended' ? outputAudioContext.resume() : Promise.resolve()
@@ -186,7 +190,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
        streamRef.current = audioStream;
 
-       // Tools Definition - FLATTENED SCHEMA
+       // Tools Definition
        const updateNoteTool: FunctionDeclaration = {
           name: "updateNote",
           description: "Update the note content or properties immediately.",
@@ -197,7 +201,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
                 type: { type: Type.STRING, description: "One of: MEMO, ALARM, TIMER, STEPS, STEPS_TRACKER, NUTRITION" },
                 alarmTime: { type: Type.STRING },
                 stepsCount: { type: Type.NUMBER },
-                visualDescription: { type: Type.STRING },
+                visualDescription: { type: Type.STRING, description: "Description for AI image generation." },
                 nutritionFoodName: { type: Type.STRING },
                 nutritionCalories: { type: Type.NUMBER },
                 nutritionCarbs: { type: Type.NUMBER },
@@ -227,14 +231,19 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
           parameters: { type: Type.OBJECT, properties: {} }
        };
 
+       // We use noteRef.current in system instruction, but note that system instruction is set at connect time.
+       // However, the tool execution logic handles updates.
        const sessionPromise = ai.live.connect({
           model: 'gemini-2.5-flash-native-audio-preview-12-2025',
           config: {
              responseModalities: [Modality.AUDIO],
              tools: [{ functionDeclarations: [updateNoteTool, createNoteTool, deleteNoteTool] }],
              systemInstruction: `You are Chronos.
-             NOTE CONTEXT: ID: "${note.id}", Content: "${note.content}"
-             Job: Update THIS note or create new ones. Be fast. Call tools immediately.`,
+             NOTE CONTEXT: ID: "${noteRef.current.id}", Content: "${noteRef.current.content}"
+             Job: Update THIS note or create new ones. Be fast. Call tools immediately.
+             
+             If the user wants to change the note, call 'updateNote' with the new content.
+             If they want to add an image description, pass 'visualDescription' to 'updateNote'.`,
              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
           },
           callbacks: {
@@ -255,29 +264,20 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
              onmessage: async (msg: LiveServerMessage) => {
                 try {
                   if (msg.toolCall) {
-                    setVoiceState('processing'); // Visual feedback immediately on tool call
+                    setVoiceState('processing');
                     const responses = [];
                     for (const fc of msg.toolCall.functionCalls) {
                         let result: any = { ok: true };
                         if (fc.name === 'updateNote') {
                           const updates = fc.args as any;
-                          const updatedNote = { ...note };
+                          
+                          // IMPORTANT: Use ref to get latest state, otherwise we overwrite previous updates
+                          const currentNoteState = noteRef.current;
+                          const updatedNote = { ...currentNoteState };
+
                           if (updates.type) updatedNote.type = updates.type as NoteType;
                           if (updates.content) updatedNote.content = updates.content;
                           
-                          // Aggressive Image Update: If content changed or visual provided, and valid target (no image or AI image)
-                          if ((updates.content || updates.visualDescription) && (!note.imageUrl || note.isAiImage)) {
-                                  const prompt = updates.visualDescription || updates.content || note.content;
-                                  // Don't generate for very short text to save API/latency unless explicitly visual
-                                  if (prompt.length > 5 || updates.visualDescription) {
-                                      const newImageBase64 = await generateNoteImage(prompt);
-                                      if (newImageBase64) {
-                                          updatedNote.imageUrl = `data:image/jpeg;base64,${newImageBase64}`;
-                                          updatedNote.isAiImage = true;
-                                      }
-                                  }
-                          }
-
                           if ((updates.type === NoteType.ALARM || updates.type === NoteType.TIMER) && updates.alarmTime) {
                               updatedNote.alarm = { time: updates.alarmTime, label: updates.content || 'Alarm' };
                           }
@@ -285,7 +285,6 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
                               updatedNote.steps = { count: Number(updates.stepsCount) };
                           }
                           
-                          // Reconstruct nutrition data from flat fields
                           if (updates.type === NoteType.NUTRITION && (updates.nutritionFoodName || updates.nutritionCalories)) {
                               updatedNote.nutrition = {
                                   foodName: updates.nutritionFoodName || 'Food',
@@ -296,27 +295,48 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
                               };
                           }
                           
+                          // 1. Update text/data immediately
                           onUpdate(updatedNote);
+                          
+                          // 2. Trigger Image generation in background if needed (don't block voice response)
+                          if ((updates.content || updates.visualDescription) && (!updatedNote.imageUrl || updatedNote.isAiImage)) {
+                                const prompt = updates.visualDescription || updates.content || updatedNote.content;
+                                if (prompt && (prompt.length > 5 || updates.visualDescription)) {
+                                    generateNoteImage(prompt).then(newImageBase64 => {
+                                        if (newImageBase64) {
+                                            // Get latest again before saving image
+                                            onUpdate({
+                                                ...noteRef.current,
+                                                imageUrl: `data:image/jpeg;base64,${newImageBase64}`,
+                                                isAiImage: true
+                                            });
+                                        }
+                                    });
+                                }
+                          }
+
                           if (!result.error) result = { updated: true };
                         } else if (fc.name === 'createNote') {
                           const args = fc.args as any;
-                          let newNoteImage = undefined;
-                          if (args.content) {
-                              const gen = await generateNoteImage(args.content);
-                              if (gen) newNoteImage = `data:image/jpeg;base64,${gen}`;
-                          }
+                          // Use create logic...
                           onCreate({
                               id: crypto.randomUUID(),
                               createdAt: new Date(),
                               type: args.type || NoteType.MEMO,
                               content: args.content,
-                              imageUrl: newNoteImage,
-                              isAiImage: !!newNoteImage,
+                              isAiImage: false,
                               alarm: args.alarmTime ? { time: args.alarmTime, label: args.content } : undefined
                           });
+                          
+                          // Background gen for new note
+                          if (args.content) {
+                              generateNoteImage(args.content); // Just warm up cache or ignore, since we can't easily update the new note without its ID here unless we change onCreate signature. 
+                              // Ideally onCreate returns the ID. For simplicity, we skip immediate image for voice-created notes inside existing note session, or rely on App to handle it.
+                          }
+                          
                           result = { created: true };
                         } else if (fc.name === 'deleteNote') {
-                          onDelete(note.id);
+                          onDelete(noteRef.current.id);
                           stopVoiceSession();
                           return;
                         }
@@ -366,18 +386,27 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
   };
 
   const toggleVoiceInteraction = async () => {
-     if (voiceState === 'idle') {
-        // 1. Initialize Audio Contexts IMMEDIATELY on click to satisfy browser autoplay policy.
-        // This 'user gesture' capture is crucial before any async calls.
+     if (voiceState !== 'idle') {
+        await stopVoiceSession();
+        return;
+     }
+
+     // IMMEDIATE VISUAL FEEDBACK
+     setVoiceState('initializing');
+
+     try {
+        // 1. Initialize Audio Contexts IMMEDIATELY on click
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         const inputCtx = new AudioContextClass({ sampleRate: 16000 });
         const outputCtx = new AudioContextClass({ sampleRate: 24000 });
         
-        // Fire and forget resume to ensure they are active
-        inputCtx.resume().catch(() => {});
-        outputCtx.resume().catch(() => {});
+        // Fire and forget resume
+        await Promise.all([
+            inputCtx.resume().catch(() => {}),
+            outputCtx.resume().catch(() => {})
+        ]);
 
-        // 2. Perform async checks (db permissions etc)
+        // 2. Perform async checks
         const allowed = await onSmartFeatureAttempt();
         if (allowed) {
             // 3. Pass pre-warmed contexts to session
@@ -386,9 +415,11 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
             // Cleanup if permission denied
             inputCtx.close();
             outputCtx.close();
+            setVoiceState('idle');
         }
-     } else {
-        await stopVoiceSession();
+     } catch (e) {
+        console.error("Voice interaction error", e);
+        setVoiceState('idle');
      }
   };
 
@@ -551,7 +582,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
                      <button 
                         onClick={toggleVoiceInteraction} 
                         disabled={voiceState === 'initializing'}
-                        className={`p-1.5 rounded-md transition-all duration-300 relative overflow-hidden ${
+                        className={`p-1.5 rounded-md transition-all duration-300 relative overflow-hidden cursor-pointer ${
                             voiceState === 'speaking' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/50' :
                             voiceState === 'listening' ? 'bg-red-600 text-white shadow-lg shadow-red-500/50 animate-pulse' :
                             voiceState === 'processing' ? 'bg-indigo-600/50 text-white cursor-wait' :

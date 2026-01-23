@@ -336,7 +336,7 @@ export const NoteMakerModal: React.FC<NoteMakerModalProps> = ({
       if (draftType === NoteType.MEMO) return null;
 
       let icon = <Check className="w-4 h-4" />;
-      let text = draftType;
+      let text: string = draftType;
       let colorClass = "bg-zinc-100 text-zinc-600";
 
       switch (draftType) {
