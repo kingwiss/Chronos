@@ -99,14 +99,14 @@ export const processMultiModalInput = async (text: string, base64Image?: string)
           
           Categorize the user's intent: 
           - ALARM: Set a specific time reminder. Return 'alarmTime' (ISO 8601). 
-            * IMPORTANT: If the user describes a scene (e.g., "Wake me up at 7am with a beach photo"), put "Wake me up at 7am" in 'content' and "A sunny beach at sunrise" in 'visualDescription'.
-            * Even if not explicitly asked, if you can infer a fun visual for the alarm, provide a 'visualDescription'.
           - TIMER: Countdown. Return 'alarmTime' (ISO 8601) calculated from now.
           - STEPS/STEPS_TRACKER: Log steps.
           - NUTRITION: Food logs.
           - MEMO: General notes.
-          
-          If 'visualDescription' is provided, the app will generate an image.
+
+          CRITICAL RULE: Always provide a 'visualDescription' for the note, even for simple memos, so I can generate a cool image for it.
+          - If the user describes a scene (e.g., "Wake me up at 7am with a beach photo"), put "Wake me up at 7am" in 'content' and "A sunny beach at sunrise" in 'visualDescription'.
+          - If the user says "Buy milk", put "Carton of milk" in 'visualDescription'.
           
           Return strictly valid JSON. Structure: { type, content, visualDescription?, steps?, alarmTime?, alarmLabel?, nutrition? }`;
 

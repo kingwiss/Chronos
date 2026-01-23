@@ -265,11 +265,16 @@ export const NoteCard: React.FC<NoteCardProps> = ({ note, onUpdate, onCreate, on
                           if (updates.type) updatedNote.type = updates.type as NoteType;
                           if (updates.content) updatedNote.content = updates.content;
                           
-                          if (updates.visualDescription && (!note.imageUrl || note.isAiImage)) {
-                                  const newImageBase64 = await generateNoteImage(updates.visualDescription);
-                                  if (newImageBase64) {
-                                      updatedNote.imageUrl = `data:image/jpeg;base64,${newImageBase64}`;
-                                      updatedNote.isAiImage = true;
+                          // Aggressive Image Update: If content changed or visual provided, and valid target (no image or AI image)
+                          if ((updates.content || updates.visualDescription) && (!note.imageUrl || note.isAiImage)) {
+                                  const prompt = updates.visualDescription || updates.content || note.content;
+                                  // Don't generate for very short text to save API/latency unless explicitly visual
+                                  if (prompt.length > 5 || updates.visualDescription) {
+                                      const newImageBase64 = await generateNoteImage(prompt);
+                                      if (newImageBase64) {
+                                          updatedNote.imageUrl = `data:image/jpeg;base64,${newImageBase64}`;
+                                          updatedNote.isAiImage = true;
+                                      }
                                   }
                           }
 

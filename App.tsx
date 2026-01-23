@@ -67,7 +67,7 @@ const App: React.FC = () => {
             setNotes([]); 
             
             setUser(currentUser);
-            // Pass the explicit UID to ensure we get the correct data
+            // Pass the explicit UID to ensure we get the correct data for this specific user
             await loadData(currentUser?.uid || null);
             setIsAuthLoading(false);
         });
@@ -124,11 +124,11 @@ const App: React.FC = () => {
       // 3. Logic Check
       if (stats.isPremium) return true;
 
-      // 10 Smart Features Per Week Limit
-      if (stats.count >= 10) {
+      // 15 Smart Features Per Week Limit (Updated from 10)
+      if (stats.count >= 15) {
           if (!currentUid) {
               // Guest hit limit -> Must Log In
-              setAuthMessage("You've reached your weekly limit of 10 smart actions. Log in to upgrade to Premium for unlimited access.");
+              setAuthMessage("You've reached your weekly limit of 15 smart actions. Log in to upgrade to Premium for unlimited access.");
               setShowAuthModal(true);
           } else {
               // User hit limit -> Must Pay
@@ -403,12 +403,17 @@ const App: React.FC = () => {
       let newImageUrl = existing.imageUrl;
       let isAiGenerated = existing.isAiImage;
 
+      // Ensure we attempt to generate an image if it's missing or AI-generated
+      // This satisfies the "every time a note is updated" requirement
       if (!existing.imageUrl || existing.isAiImage) {
           const prompt = result.visualDescription || result.content;
-          const genImage = await generateNoteImage(prompt);
-          if (genImage) {
-              newImageUrl = `data:image/jpeg;base64,${genImage}`;
-              isAiGenerated = true;
+          // Don't generate for tiny edits unless explicit visual description exists
+          if (prompt && (prompt.length > 5 || result.visualDescription)) {
+              const genImage = await generateNoteImage(prompt);
+              if (genImage) {
+                  newImageUrl = `data:image/jpeg;base64,${genImage}`;
+                  isAiGenerated = true;
+              }
           }
       }
       
@@ -455,14 +460,10 @@ const App: React.FC = () => {
   };
 
   const handleNoteMakerSave = async (draft: DraftData) => {
-    // 1. Prepare basics
     const tempId = crypto.randomUUID();
     const createdAt = new Date();
-    
-    // Capture user ID at start of process to ensure consistency during async operations
     const currentUid = auth.currentUser?.uid || null;
 
-    // Construct initial note for immediate display (Optimistic UI)
     const initialNote: Note = {
         id: tempId,
         createdAt,
@@ -475,31 +476,23 @@ const App: React.FC = () => {
         nutrition: draft.nutritionData
     };
 
-    // Handle empty content or analyzing state
     if (!initialNote.content && pendingAttachment) {
         initialNote.content = "Analyzing image...";
     } else if (!initialNote.content) {
         initialNote.content = "New Note";
     }
 
-    // 2. Render Immediately (Unblock UI)
     await addNoteInternal(initialNote);
     
-    // Reset UI states immediately
     setPendingAttachment(null);
     setCameraMode(NoteType.MEMO);
 
-    // 3. Background Processing (Fire and Forget)
     (async () => {
         try {
-            // Safety check: If user switched accounts while processing, abort
             if ((auth.currentUser?.uid || null) !== currentUid) return;
 
-            // If explicit type was set manually (not MEMO), we usually don't need AI classification
-            // unless there is an image attachment that needs analysis (e.g. food)
             const isManualType = draft.type !== NoteType.MEMO;
             
-            // Skip smart features if manually typed and no attachment, unless premium
             if (!pendingAttachment && isManualType) return;
 
             const allowed = await attemptSmartFeature();
@@ -509,8 +502,6 @@ const App: React.FC = () => {
             let processingResult: any = null;
             let needsUpdate = false;
 
-            // A. Classification / Analysis
-            // Run if it's a generic MEMO or has an attachment
             if (draft.type === NoteType.MEMO || pendingAttachment) {
                  let promptText = draft.content;
                  if (!promptText && cameraMode === NoteType.NUTRITION) {
@@ -519,7 +510,6 @@ const App: React.FC = () => {
                  
                  processingResult = await processMultiModalInput(promptText, pendingAttachment || undefined);
                  
-                 // Update note object with AI results
                  updatedNote.type = processingResult.type;
                  updatedNote.content = processingResult.content;
                  
@@ -537,17 +527,13 @@ const App: React.FC = () => {
                  needsUpdate = true;
             }
 
-            // A2. Apply updates from classification
             if (needsUpdate) {
                 await updateNoteInternal({ ...updatedNote });
             }
 
-            // B. Image Generation
-            // Generate if no image exists AND we have content/description
+            // Always try to generate an image if one doesn't exist (unless user uploaded one)
             if (!updatedNote.imageUrl) {
                 const prompt = processingResult?.visualDescription || updatedNote.content;
-                
-                // Only generate if we have a valid prompt and it's not just a short command
                 if (prompt && prompt.length > 3) {
                     const genImage = await generateNoteImage(prompt);
                     if (genImage) {
